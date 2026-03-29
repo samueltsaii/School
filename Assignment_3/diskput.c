@@ -8,7 +8,6 @@
 #include <limits.h>
 #include <errno.h>
 #include "FAT12.h"
-#include "diskget.h"
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
