@@ -13,10 +13,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 FAT12BootSector g_boot; 
 
-
+/* Takes in an input string, either the name of a file path containing sub-directories seperated by '/' or a file. 
+The function formats the input string into the 11 byte FAT format, with characters following "." in the extension trimmed.*/
 void format_to_fat(const char* input, char* output) {
     memset(output, ' ', 11);
     output[11] = '\0'; 
@@ -40,6 +42,7 @@ void format_to_fat(const char* input, char* output) {
     }
 }
 
+/* Takes in a file path string and returns a buffer containing the copied contents of the file.*/
 char* copy_linux_file(char* path){ 
     FILE* fptr = fopen(path, "rb");
     if (fptr == NULL) {
@@ -77,7 +80,7 @@ char* copy_linux_file(char* path){
     return buffer;
 }
 
-
+/*Takes in an input path entered from the command line to see if a directory exists*/
 bool directory_exists(const char* path){
     struct stat info;
     if(stat(path, &info) != 0){
@@ -92,8 +95,10 @@ bool directory_exists(const char* path){
     return S_ISDIR(info.st_mode); 
 }
 
+/*Performs the operation of copying a file from the linux directory into the file system image.*/
+int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, char* source_buffer, size_t file_size){
 
-int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, char* source_buffer, size_t file_size) {
+    /*Computation to locate the data section of the FAT12 data section and set up mmap() usages*/
     uint32_t root_dir_size = sizeof(FAT12Directory) * boot->Root_Entry_Count;
     uint32_t root_dir_sectors = (root_dir_size + boot->Bytes_per_Sector - 1) / boot->Bytes_per_Sector;
     uint32_t first_data_sector = boot->Reserved_Sector_Count + (boot->Fat_Count * boot->Sectors_Per_Fat) + root_dir_sectors;
@@ -104,10 +109,12 @@ int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, 
     uint32_t current_dir_max_entries = boot->Root_Entry_Count;
     uint8_t* fatTable = disk_base + (boot->Reserved_Sector_Count * boot->Bytes_per_Sector);
 
+    /*Tokens that are split if the user enters a file path containing the "/" deliminator */
     char* path_copy = strdup(destination_path);
     char* token = strtok(path_copy, "/");
     char* next_token = strtok(NULL, "/");
 
+    /*Walks through root and subdirectories and checks if an entry contains the portion of the path name indicated by the token split by strtok()*/
     while(next_token != NULL){
         char search_name[12];
         format_to_fat(token, search_name);
@@ -116,7 +123,8 @@ int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, 
         for(uint32_t i = 0; i < current_dir_max_entries; i++) {
             if (memcmp(current_dir[i].File_Name, search_name, 11) == 0){
                 if(!(current_dir[i].Attributes & 0x10)){
-                    free(path_copy); return 0;
+                    free(path_copy); 
+                    return 0;
                 }
                 uint32_t cluster = current_dir[i].Low_Bits;
                 uint32_t cluster_offset = (first_data_sector + (cluster - 2) * boot->Sectors_per_Cluster) * boot->Bytes_per_Sector;
@@ -137,6 +145,7 @@ int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, 
     char final_fat_name[12];
     format_to_fat(token, final_fat_name);
 
+    /*Searches for the first available disk space and places the file in the file system image*/
     for (uint32_t i = 2; i < (total_data_clusters + 2); i++){
         uint32_t f_offset = (i * 3) / 2;
         uint16_t val;
@@ -155,7 +164,7 @@ int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, 
                 fatTable[f_offset] = (fatTable[f_offset] & 0x0F) | 0xF0;
                 fatTable[f_offset + 1] = 0xFF;
             }
-
+            /*Update file system image directory entry*/
             for(int j = 0; j < current_dir_max_entries; j++) {
                 if(current_dir[j].File_Name[0] == 0x00 || (uint8_t)current_dir[j].File_Name[0] == 0xE5) {
                     printf("Target: %s | Cluster: %u | Offset: %u | Size: %zu\n", final_fat_name, i, d_offset, file_size);
@@ -163,6 +172,19 @@ int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, 
                     current_dir[j].Low_Bits = (uint16_t)i;
                     current_dir[j].File_Size = (uint32_t)file_size;
                     current_dir[j].Attributes = 0x00;
+                    //Update time stamp 
+                    time_t t = time(NULL);
+                    struct tm *tm = localtime(&t);
+
+                    uint16_t fat_date = ((tm->tm_year + 1900 - 1980) << 9) | ((tm->tm_mon + 1) << 5) | (tm->tm_mday);
+
+                    uint16_t fat_time = (tm->tm_hour << 11) | (tm->tm_min << 5) | (tm->tm_sec / 2);
+
+                    current_dir[j].Creation_Date = fat_date;
+                    current_dir[j].Creation_Time = fat_time;
+                    current_dir[j].Last_MOD_Date = fat_date;
+                    current_dir[j].Last_Mod_Time = fat_time;
+
                     free(path_copy);
                     return 1; 
                 }
@@ -174,6 +196,7 @@ int disk_put(uint8_t* disk_base, FAT12BootSector* boot, char* destination_path, 
 }
 
 int main(int argc, char* argv[]) {
+    /*User command line input */
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <disk image> <path on disk>\n", argv[0]);
         return -1;
@@ -188,7 +211,7 @@ int main(int argc, char* argv[]) {
     else{
         local_filename = path_on_disk; 
     }
-
+    /*adopted from the provided mmap example*/
     struct stat linux_st;
     if(stat(local_filename, &linux_st) != 0) {
         fprintf(stderr, "Error: Local file '%s' not found.\n", local_filename);
@@ -210,19 +233,20 @@ int main(int argc, char* argv[]) {
     } 
 
     FAT12BootSector* boot = (FAT12BootSector*)disk_base;
-    
+
+    /*Create file content b buffer*/
     char* file_content = copy_linux_file(local_filename); 
     if(!file_content){
         return -1;
     } 
-    
+    /*Preform diskput operations*/
     if (disk_put(disk_base, boot, path_on_disk, file_content, (size_t)linux_st.st_size)) {
         printf("File copied successfully to %s\n", path_on_disk);
     } 
     else {
         printf("Failed to copy file.\n"); 
     }
-
+    /*Free memory space*/
     munmap(disk_base, disk_st.st_size);
     close(fd);
     free(file_content);

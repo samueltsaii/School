@@ -43,7 +43,9 @@ typedef struct{
     uint16_t Last_MOD_Date;
     uint16_t Low_Bits;
     uint32_t File_Size; 
-}__attribute__((packed)) FAT12Directory; 
+}__attribute__((packed)) FAT12Directory;
+
+
 
 bool Read_Boot_Sector(FILE* disk, FAT12BootSector* boot);
 

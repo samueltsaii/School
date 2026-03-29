@@ -4,6 +4,7 @@
 # include <stdbool.h>
 # include <string.h>
 
+/*Contains the BIOS of the FAT12 file system*/
 typedef struct {
 
     uint8_t  Boot_Jump[3];
@@ -46,6 +47,7 @@ typedef struct{
     uint32_t File_Size; 
 }__attribute__((packed)) FAT12Directory; 
 
+/*Helper functions*/
 bool Read_Boot_Sector(FILE* disk, FAT12BootSector* boot){
     return fread(boot, sizeof(FAT12BootSector), 1, disk) > 0;
 }
